@@ -1,0 +1,7 @@
+# Windows配布exeに実際に含まれる、確認済みのRustSec informational warnings。
+# audit_release.ps1 はこの一覧にない警告が増減した場合に失敗する。
+RUSTSEC-2025-0075
+RUSTSEC-2025-0080
+RUSTSEC-2025-0081
+RUSTSEC-2025-0098
+RUSTSEC-2025-0100

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="und">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Phone Audio Receiver</title>
+    <style>
+      :root { color-scheme: light dark; background: #f4f7fb; }
+      body { margin: 0; min-width: 640px; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; }
+      .boot { min-height: 100vh; display: grid; place-content: center; justify-items: center; gap: 12px; color: #637083; background: linear-gradient(135deg, #eef5ff, #f7f8fc); }
+      .boot-mark { display: grid; place-items: center; width: 58px; height: 58px; border-radius: 18px; background: #1769d5; color: white; font-size: 26px; box-shadow: 0 16px 40px #1769d555; }
+      .boot strong { color: #1c2430; font-size: 1.05rem; }
+      @media (prefers-color-scheme: dark) { :root { background: #111722; } .boot { color: #a5b2c5; background: radial-gradient(circle at 10% 0, #1c3a602f, transparent 35%), #111722; } .boot strong { color: #e7edf8; } }
+    </style>
+  </head>
+  <body>
+    <div id="app"><main class="boot"><div class="boot-mark">♬</div><strong>Phone Audio Receiver</strong><span aria-hidden="true">…</span></main></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

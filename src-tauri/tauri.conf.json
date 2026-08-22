@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Phone Audio Receiver",
+  "version": "0.2.2",
+  "identifier": "io.github.mouiron.phone-audio-receiver",
+  "build": {
+    "beforeDevCommand": "npm run frontend:dev",
+    "beforeBuildCommand": "npm run frontend:build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Phone Audio Receiver",
+        "windowClassname": "PhoneAudioReceiverTauri",
+        "width": 900,
+        "height": 700,
+        "minWidth": 720,
+        "minHeight": 560,
+        "backgroundColor": "#111722",
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' customprotocol: asset:; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'",
+      "devCsp": "default-src 'self' http://127.0.0.1:1420; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["../assets/icon.ico"]
+  }
+}

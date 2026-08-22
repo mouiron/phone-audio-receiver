@@ -1,0 +1,61 @@
+name: Bug report
+description: 不具合を報告する / Report a problem
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        生ログ、実際の端末名、完全なBluetoothデバイスID、Windowsユーザー名やパスを投稿しないでください。
+        Do not post raw logs, real device names, complete Bluetooth device IDs, Windows user names, or user paths.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: "0.2.2"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: 端末名は端末A、端末Bなどに置き換えてください。
+      placeholder: |
+        1. 端末Aを接続
+        2. 端末Bを接続
+        3. 端末Bを切断
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: anonymized_log
+    attributes:
+      label: Anonymized log (optional)
+      description: アプリの「匿名化済みログをコピー」で取得した内容だけを貼り付けてください。
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: 生ログ、実端末名、完全なBluetooth ID、ユーザー名・パスが含まれていないことを確認しました。
+          required: true

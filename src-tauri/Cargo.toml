@@ -1,0 +1,31 @@
+[package]
+name = "bluetooth_phone_audio_receiver_tauri"
+version = "0.2.2"
+description = "Bluetooth Phone Audio Receiver Tauri UI"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/mouiron/phone-audio-receiver"
+
+[lib]
+name = "bluetooth_phone_audio_receiver_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "bluetooth_phone_audio_receiver_tauri"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+bluetooth_phone_audio_receiver_core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging"
+] }

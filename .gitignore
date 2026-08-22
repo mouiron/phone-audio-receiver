@@ -1,0 +1,21 @@
+/node_modules/
+/dist/
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+/distribution/
+/target-*/
+/.tauri/
+
+# Local application data and logs
+*.log
+log.previous.txt
+config.json
+
+# Editor and operating-system files
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store

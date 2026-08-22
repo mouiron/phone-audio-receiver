@@ -1,0 +1,28 @@
+[package]
+name = "bluetooth_phone_audio_receiver_core"
+version = "0.2.2"
+edition = "2021"
+description = "Bluetooth Phone Audio Receiver shared Windows audio, settings, and localization logic"
+license = "MIT"
+repository = "https://github.com/mouiron/phone-audio-receiver"
+
+[dependencies]
+# WinRT/Win32 バインディング。Microsoft公式メンテナンス。
+# バージョンは実装時点の最新安定版 (0.62系) を指定。
+windows = { version = "0.62", features = [
+    # Windows.Media.Audio.AudioPlaybackConnection
+    "Media_Audio",
+    # Windows.Devices.Enumeration.DeviceInformation (ペア済みデバイス列挙)
+    "Devices_Enumeration",
+    # WinRT非同期操作 (IAsyncOperation) 用
+    "Foundation",
+    "Foundation_Collections",
+    # RoInitialize (WinRTアパートメント初期化) 用
+    "Win32_System_WinRT",
+    "Win32_Foundation",
+    "Win32_Globalization",
+] }
+
+# 設定(前回デバイス・トレイ格納オプション等)をJSONで永続化するため。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
