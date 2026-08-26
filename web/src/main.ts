@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import "./style.css";
 
@@ -18,6 +19,7 @@ let logOpen = false;
 let logContent = "";
 let diagnosticsOpen = false;
 let diagnosticsContent = "";
+let appVersion = "";
 
 function systemDark() { return window.matchMedia("(prefers-color-scheme: dark)").matches; }
 function applyTheme() {
@@ -63,7 +65,7 @@ function render() {
           <label class="theme-control"><span>${tr("テーマ", "Theme")}</span><select id="theme"><option value="system">${tr("システムに合わせる", "Use system setting")}</option><option value="dark">${tr("ダーク", "Dark")}</option><option value="light">${tr("ライト", "Light")}</option></select></label>
         </div>
       </section>
-      <footer>Phone Audio Receiver <span>v0.2.2</span></footer>
+      <footer>Phone Audio Receiver${appVersion ? ` <span>v${escapeHtml(appVersion)}</span>` : ""}</footer>
       ${logOpen ? `<div class="log-backdrop" role="presentation"><section class="log-dialog" role="dialog" aria-modal="true" aria-labelledby="log-title"><div class="log-heading"><div><h2 id="log-title">${tr("アプリログ", "Application log")}</h2><p>${tr("直近30行を匿名化して表示しています。日時はJST（+09:00）です。", "Showing the latest 30 lines with personal data anonymized. Times are UTC (Z).")}</p></div><button class="ghost" id="close-log" aria-label="${tr("ログを閉じる", "Close log")}">${tr("閉じる", "Close")}</button></div><pre class="log-content">${escapeHtml(formatLog(logContent) || tr("ログはまだありません。", "No log entries yet."))}</pre><div class="log-actions"><button class="secondary" id="refresh-log">${tr("更新", "Refresh")}</button><button class="secondary" id="copy-log">${tr("匿名化済みログをコピー", "Copy anonymized log")}</button><button class="ghost" id="open-log-folder" title="${tr("生ログには端末名、Bluetooth ID、ユーザー環境のパスが含まれる場合があります", "Raw logs may contain device names, Bluetooth IDs, and paths from the user environment")}">${tr("生ログフォルダーを開く", "Open raw log folder")}</button></div></section></div>` : ""}
       ${diagnosticsOpen ? `<div class="log-backdrop" role="presentation"><section class="log-dialog diagnostics-dialog" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title"><div class="log-heading"><h2 id="diagnostics-title">Phone Audio Receiver — ${tr("診断情報", "Diagnostics")}</h2><button class="ghost" id="close-diagnostics" aria-label="${tr("診断情報を閉じる", "Close diagnostics")}">${tr("閉じる", "Close")}</button></div><pre class="log-content diagnostics-content">${escapeHtml(diagnosticsContent)}</pre></section></div>` : ""}
     </main>`;
@@ -176,6 +178,7 @@ async function start() {
   // 保存済みテーマを取得してから本画面を描画し、テーマの切り替わりを防ぐ。
   renderLoading();
   try {
+    appVersion = await getVersion();
     await listen<Snapshot>("app-state-changed", (event) => { snapshot = event.payload; render(); });
     await listen<{ deviceId: string; message: string }>("connection-progress", (event) => { setProgress(event.payload.message); });
     await listen<ConnectionEvent>("connection-state-changed", (event) => {

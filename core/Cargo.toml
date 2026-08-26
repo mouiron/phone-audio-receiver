@@ -1,8 +1,9 @@
 [package]
 name = "bluetooth_phone_audio_receiver_core"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 description = "Bluetooth Phone Audio Receiver shared Windows audio, settings, and localization logic"
+authors = ["mouiron"]
 license = "MIT"
 repository = "https://github.com/mouiron/phone-audio-receiver"
 

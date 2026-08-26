@@ -98,4 +98,6 @@ cargo test --workspace --locked
 
 ## ライセンス
 
+著作者: `mouiron`
+
 このプロジェクトは[MIT License](LICENSE)で公開されています。配布バイナリが利用するサードパーティーソフトウェアのライセンスは、Releaseの配布物に含まれる`THIRD_PARTY_NOTICES.md`と`THIRD_PARTY_LICENSES.txt`を参照してください。

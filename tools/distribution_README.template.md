@@ -71,6 +71,8 @@ Get-FileHash -Algorithm SHA256 '.\Phone Audio Receiver.exe'
 
 ## ライセンスと依存関係
 
+著作者: `mouiron`
+
 本アプリはMIT Licenseで公開されています。アプリ本体のライセンスは`LICENSE`を確認してください。
 
 本アプリにはRust、Tauri、Microsoft Windows APIなどのオープンソースソフトウェアを利用しています。依存ライブラリの一覧と宣言ライセンスは`THIRD_PARTY_NOTICES.md`、ライセンス本文・NOTICEは`THIRD_PARTY_LICENSES.txt`を確認してください。
