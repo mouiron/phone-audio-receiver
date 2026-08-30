@@ -6,9 +6,9 @@ use std::thread;
 use bluetooth_phone_audio_receiver_core::{bt, config, i18n};
 use serde::{Deserialize, Serialize};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State,
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder,
 };
 use windows::core::{w, PCWSTR};
 use windows::Media::Audio::AudioPlaybackConnection;
@@ -29,6 +29,10 @@ const STARTUP_VALUE_NAME: windows::core::PCWSTR = windows::core::w!("PhoneAudioR
 const LEGACY_STARTUP_VALUE_NAME: windows::core::PCWSTR =
     windows::core::w!("BluetoothPhoneAudioReceiverTauri");
 const TAURI_WINDOW_CLASS: PCWSTR = w!("PhoneAudioReceiverTauri");
+const MAIN_WINDOW_TITLE_WIDE: PCWSTR = w!("Phone Audio Receiver");
+const QUICK_WINDOW_TITLE: &str = "Phone Audio Receiver — Quick controls";
+const QUICK_WINDOW_TITLE_WIDE: PCWSTR = w!("Phone Audio Receiver — Quick controls");
+const TRAY_DEVICE_LIMIT: usize = 6;
 #[cfg(not(debug_assertions))]
 const SINGLE_INSTANCE_MUTEX: PCWSTR = w!("Local\\PhoneAudioReceiver.SingleInstance");
 // 配布版がタスクトレイで動作中でも `tauri dev` の検証プロセスを起動できるよう、
@@ -69,6 +73,20 @@ struct AppState {
     /// ×ボタンの処理中に設定ファイルを読み直さず、直近に確定した設定を使う。
     /// ウィンドウイベントとファイルI/Oが競合する余地をなくす。
     minimize_to_tray: AtomicBool,
+    tray_actions: Mutex<HashMap<String, TrayAction>>,
+    last_window_mode: Mutex<WindowMode>,
+}
+
+#[derive(Clone, Copy)]
+enum WindowMode {
+    Main,
+    Quick,
+}
+
+#[derive(Clone)]
+enum TrayAction {
+    Connect(String),
+    Disconnect(String),
 }
 
 impl Default for AppState {
@@ -76,6 +94,8 @@ impl Default for AppState {
         Self {
             runtime: Mutex::new(Runtime::default()),
             minimize_to_tray: AtomicBool::new(config::load().minimize_to_tray),
+            tray_actions: Mutex::new(HashMap::new()),
+            last_window_mode: Mutex::new(WindowMode::Main),
         }
     }
 }
@@ -187,7 +207,138 @@ fn snapshot(state: &AppState) -> AppSnapshot {
 }
 
 fn emit_snapshot(app: &AppHandle, state: &AppState) {
-    let _ = app.emit("app-state-changed", snapshot(state));
+    let value = snapshot(state);
+    let _ = app.emit("app-state-changed", &value);
+    if let Err(error) = update_tray_menu(app, state, &value) {
+        config::append_log(&format!(
+            "タスクトレイメニューを更新できませんでした: {error}"
+        ));
+    }
+}
+
+fn tray_status_rank(status: &str) -> u8 {
+    match status {
+        "connected" => 0,
+        "connecting" => 1,
+        _ => 2,
+    }
+}
+
+fn update_tray_menu(app: &AppHandle, state: &AppState, value: &AppSnapshot) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id("main") else {
+        return Ok(());
+    };
+    let language = i18n::system_language();
+    let connected = value
+        .devices
+        .iter()
+        .filter(|device| device.status == "connected")
+        .count();
+    let mut devices = value.devices.clone();
+    devices.sort_by(|left, right| {
+        tray_status_rank(&left.status)
+            .cmp(&tray_status_rank(&right.status))
+            .then_with(|| right.auto_connect.cmp(&left.auto_connect))
+            .then_with(|| {
+                let left_last = value.last_device_id.as_deref() == Some(left.id.as_str());
+                let right_last = value.last_device_id.as_deref() == Some(right.id.as_str());
+                right_last.cmp(&left_last)
+            })
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+
+    let menu = Menu::new(app)?;
+    let summary_label = match language {
+        i18n::Language::Japanese => format!("接続中: {connected}台"),
+        i18n::Language::English => format!("Connected: {connected}"),
+    };
+    let summary = MenuItem::with_id(app, "tray-summary", summary_label, false, None::<&str>)?;
+    menu.append(&summary)?;
+
+    let quick = MenuItem::with_id(
+        app,
+        "quick",
+        language.select("クイック操作", "Quick controls"),
+        true,
+        None::<&str>,
+    )?;
+    menu.append(&quick)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+
+    let mut actions = HashMap::new();
+    for (index, device) in devices.iter().take(TRAY_DEVICE_LIMIT).enumerate() {
+        let action_id = format!("tray-device-action-{index}");
+        let label = match device.status.as_str() {
+            "connected" => format!("✓ {}", device.name),
+            "connecting" => format!("… {}", device.name),
+            _ => format!("  {}", device.name),
+        }
+        .replace('&', "&&");
+        let submenu = Submenu::with_id(app, format!("tray-device-{index}"), label, true)?;
+        let action_label = match device.status.as_str() {
+            "connected" => language.select("切断", "Disconnect"),
+            "connecting" => language.select("中止", "Cancel"),
+            _ => language.select("接続", "Connect"),
+        };
+        let action = MenuItem::with_id(app, &action_id, action_label, true, None::<&str>)?;
+        submenu.append(&action)?;
+        menu.append(&submenu)?;
+        actions.insert(
+            action_id,
+            if device.status == "disconnected" {
+                TrayAction::Connect(device.id.clone())
+            } else {
+                TrayAction::Disconnect(device.id.clone())
+            },
+        );
+    }
+    if devices.is_empty() {
+        let empty = MenuItem::with_id(
+            app,
+            "tray-empty",
+            language.select("端末が見つかっていません", "No devices found"),
+            false,
+            None::<&str>,
+        )?;
+        menu.append(&empty)?;
+    } else if devices.len() > TRAY_DEVICE_LIMIT {
+        let remaining = devices.len() - TRAY_DEVICE_LIMIT;
+        let more_label = match language {
+            i18n::Language::Japanese => format!("その他の端末…（{remaining}台）"),
+            i18n::Language::English => format!("More devices… ({remaining})"),
+        };
+        let more = MenuItem::with_id(app, "more", more_label, true, None::<&str>)?;
+        menu.append(&more)?;
+    }
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    let refresh = MenuItem::with_id(
+        app,
+        "refresh",
+        language.select("再検索", "Refresh"),
+        true,
+        None::<&str>,
+    )?;
+    let show = MenuItem::with_id(
+        app,
+        "show",
+        language.select("アプリを開く", "Open app"),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        language.select("終了", "Quit"),
+        true,
+        None::<&str>,
+    )?;
+    menu.append(&refresh)?;
+    menu.append(&show)?;
+    menu.append(&quit)?;
+    if let Ok(mut stored) = state.tray_actions.lock() {
+        *stored = actions;
+    }
+    tray.set_menu(Some(menu))
 }
 
 #[derive(Clone, Serialize)]
@@ -251,6 +402,11 @@ fn refresh_devices(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<Ap
     config::append_log("デバイス一覧を更新しました。");
     let value = snapshot(state.inner().as_ref());
     let _ = app.emit("app-state-changed", &value);
+    if let Err(error) = update_tray_menu(&app, state.inner().as_ref(), &value) {
+        config::append_log(&format!(
+            "タスクトレイメニューを更新できませんでした: {error}"
+        ));
+    }
     Ok(value)
 }
 
@@ -544,6 +700,27 @@ fn recent_log(state: State<'_, Arc<AppState>>) -> String {
     config::anonymize_log(&config::recent_log(30), &devices)
 }
 
+#[tauri::command]
+fn hide_quick_window(app: AppHandle) {
+    remember_window_mode(
+        app.state::<Arc<AppState>>().inner().as_ref(),
+        WindowMode::Quick,
+    );
+    if let Some(window) = app.get_webview_window("quick") {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
+fn switch_to_main_window(app: AppHandle) {
+    show_main_window(&app);
+}
+
+#[tauri::command]
+fn switch_to_quick_window(app: AppHandle) {
+    show_quick_window(&app);
+}
+
 fn set_startup_registration(enabled: bool, start_minimized: bool) -> Result<(), String> {
     let mut key = HKEY::default();
     let create_result = unsafe {
@@ -664,22 +841,20 @@ pub fn run() {
                     "Tauriプロセス内の端末別接続管理を初期化しました（状態監視なし）。",
                 );
             }
-            let language = i18n::system_language();
-            let show = MenuItem::with_id(
+            WebviewWindowBuilder::new(
                 app,
-                "show",
-                language.select("開く", "Open"),
-                true,
-                None::<&str>,
-            )?;
-            let quit = MenuItem::with_id(
-                app,
-                "quit",
-                language.select("終了", "Quit"),
-                true,
-                None::<&str>,
-            )?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+                "quick",
+                WebviewUrl::App("index.html?mode=quick".into()),
+            )
+            .title(QUICK_WINDOW_TITLE)
+            .inner_size(480.0, 620.0)
+            .resizable(false)
+            .skip_taskbar(true)
+            .visible(false)
+            .center()
+            .build()?;
+
+            let menu = Menu::new(app)?;
             let icon = app
                 .default_window_icon()
                 .cloned()
@@ -689,26 +864,23 @@ pub fn run() {
                 .tooltip("Phone Audio Receiver")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show" => show_main_window(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
+                .on_menu_event(|app, event| handle_tray_menu_event(app, event.id().as_ref()))
                 .on_tray_icon_event(|tray, event| {
                     if matches!(
                         event,
                         TrayIconEvent::Click {
                             button: MouseButton::Left,
                             ..
-                        } | TrayIconEvent::DoubleClick {
-                            button: MouseButton::Left,
-                            ..
                         }
                     ) {
-                        show_main_window(tray.app_handle());
+                        handle_tray_left_click(tray.app_handle());
                     }
                 })
                 .build(app)?;
+
+            let state = app.state::<Arc<AppState>>();
+            let value = snapshot(state.inner().as_ref());
+            update_tray_menu(app.handle(), state.inner().as_ref(), &value)?;
 
             if started_minimized() && config::load().start_minimized {
                 if let Some(window) = app.get_webview_window("main") {
@@ -719,6 +891,15 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "quick" {
+                    remember_window_mode(
+                        window.state::<Arc<AppState>>().inner().as_ref(),
+                        WindowMode::Quick,
+                    );
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
                 let minimize_to_tray = window
                     .state::<Arc<AppState>>()
                     .minimize_to_tray
@@ -727,6 +908,10 @@ pub fn run() {
                     "閉じるボタンを受け取りました (タスクトレイへ格納: {minimize_to_tray})"
                 ));
                 if minimize_to_tray {
+                    remember_window_mode(
+                        window.state::<Arc<AppState>>().inner().as_ref(),
+                        WindowMode::Main,
+                    );
                     api.prevent_close();
                     hide_window_for_tray(window);
                 }
@@ -741,7 +926,10 @@ pub fn run() {
             save_settings,
             diagnostics,
             open_log_folder,
-            recent_log
+            recent_log,
+            hide_quick_window,
+            switch_to_main_window,
+            switch_to_quick_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
@@ -758,7 +946,14 @@ fn acquire_single_instance() -> bool {
         unsafe { windows::Win32::Foundation::GetLastError() } == ERROR_ALREADY_EXISTS;
     if already_running {
         unsafe {
-            if let Ok(window) = FindWindowW(TAURI_WINDOW_CLASS, PCWSTR::null()) {
+            let main_window = FindWindowW(TAURI_WINDOW_CLASS, PCWSTR::null())
+                .or_else(|_| FindWindowW(PCWSTR::null(), MAIN_WINDOW_TITLE_WIDE));
+            if let Ok(window) = main_window {
+                // 通常画面を確実に取得できた場合だけクイック画面を隠す。
+                // 取得失敗時に表示中の画面まで失われることを防ぐ。
+                if let Ok(quick) = FindWindowW(PCWSTR::null(), QUICK_WINDOW_TITLE_WIDE) {
+                    let _ = ShowWindow(quick, SW_HIDE);
+                }
                 let _ = ShowWindow(window, SW_RESTORE);
                 let _ = ShowWindow(window, SW_SHOW);
                 let _ = SetForegroundWindow(window);
@@ -773,9 +968,115 @@ fn acquire_single_instance() -> bool {
 }
 
 fn show_main_window(app: &AppHandle) {
+    remember_window_mode(
+        app.state::<Arc<AppState>>().inner().as_ref(),
+        WindowMode::Main,
+    );
+    if let Some(quick) = app.get_webview_window("quick") {
+        let _ = quick.hide();
+    }
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+    }
+}
+
+fn show_quick_window(app: &AppHandle) {
+    remember_window_mode(
+        app.state::<Arc<AppState>>().inner().as_ref(),
+        WindowMode::Quick,
+    );
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    if let Some(window) = app.get_webview_window("quick") {
+        let _ = window.center();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn handle_tray_left_click(app: &AppHandle) {
+    let main_visible = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    if main_visible {
+        show_main_window(app);
+        return;
+    }
+
+    if let Some(quick) = app.get_webview_window("quick") {
+        if quick.is_visible().unwrap_or(false) {
+            // Windowsから同じクリックに対する通知が重複しても閉じない。
+            // 表示済みなら前面化だけを行い、操作を冪等にする。
+            let _ = quick.set_focus();
+            return;
+        }
+    }
+    let last_mode = app
+        .state::<Arc<AppState>>()
+        .last_window_mode
+        .lock()
+        .map(|mode| *mode)
+        .unwrap_or(WindowMode::Main);
+    match last_mode {
+        WindowMode::Main => show_main_window(app),
+        WindowMode::Quick => show_quick_window(app),
+    }
+}
+
+fn remember_window_mode(state: &AppState, mode: WindowMode) {
+    if let Ok(mut last_mode) = state.last_window_mode.lock() {
+        *last_mode = mode;
+    }
+}
+
+fn handle_tray_menu_event(app: &AppHandle, id: &str) {
+    match id {
+        "quick" | "more" => show_quick_window(app),
+        "show" => show_main_window(app),
+        "quit" => app.exit(0),
+        "refresh" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = app.state::<Arc<AppState>>();
+                if let Err(error) = refresh_devices(app.clone(), state) {
+                    config::append_log(&format!("タスクトレイから再検索できませんでした: {error}"));
+                }
+            });
+        }
+        _ => {
+            let action = app
+                .state::<Arc<AppState>>()
+                .tray_actions
+                .lock()
+                .ok()
+                .and_then(|actions| actions.get(id).cloned());
+            match action {
+                Some(TrayAction::Connect(device_id)) => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app.state::<Arc<AppState>>();
+                        if let Err(error) = connect_device(app.clone(), device_id, state) {
+                            config::append_log(&format!(
+                                "タスクトレイから接続できませんでした: {error}"
+                            ));
+                        }
+                    });
+                }
+                Some(TrayAction::Disconnect(device_id)) => {
+                    let state = app.state::<Arc<AppState>>();
+                    if let Err(error) = disconnect_device(app.clone(), device_id, state) {
+                        config::append_log(&format!(
+                            "タスクトレイから切断できませんでした: {error}"
+                        ));
+                    }
+                }
+                None => {}
+            }
+        }
     }
 }
 

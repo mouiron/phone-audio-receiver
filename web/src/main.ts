@@ -8,7 +8,9 @@ type Device = { id: string; name: string; status: "connected" | "connecting" | "
 type Settings = { minimizeToTray: boolean; autoConnect: boolean; connectionNotifications: boolean; launchAtLogin: boolean; startMinimized: boolean; theme: "system" | "light" | "dark" };
 type Snapshot = { devices: Device[]; settings: Settings; lastDeviceId?: string; autoConnectDeviceIds: string[]; displayLanguage: "ja" | "en" };
 type ConnectionEvent = { deviceId: string; name: string; status: "connected" | "disconnected" };
+type DeviceFilter = "all" | "connected" | "disconnected";
 
+const quickMode = new URLSearchParams(window.location.search).get("mode") === "quick";
 const initialLanguage: Snapshot["displayLanguage"] = navigator.language.toLowerCase().startsWith("ja") ? "ja" : "en";
 let snapshot: Snapshot = { devices: [], settings: { minimizeToTray: true, autoConnect: false, connectionNotifications: false, launchAtLogin: false, startMinimized: true, theme: "system" }, autoConnectDeviceIds: [], displayLanguage: initialLanguage };
 let languageOverride: Snapshot["displayLanguage"] | null = null;
@@ -20,6 +22,9 @@ let logContent = "";
 let diagnosticsOpen = false;
 let diagnosticsContent = "";
 let appVersion = "";
+let deviceFilter: DeviceFilter = "all";
+let deviceSearch = "";
+const deviceMessages = new Map<string, string>();
 
 function systemDark() { return window.matchMedia("(prefers-color-scheme: dark)").matches; }
 function applyTheme() {
@@ -27,11 +32,62 @@ function applyTheme() {
   document.documentElement.dataset.theme = snapshot.settings.theme === "system" ? (systemDark() ? "dark" : "light") : snapshot.settings.theme;
 }
 function statusText(status: Device["status"]) {
-  return snapshot.displayLanguage === "ja"
+  return displayLanguage() === "ja"
     ? ({ connected: "接続中", connecting: "接続しています…", disconnected: "未接続" })[status]
     : ({ connected: "Connected", connecting: "Connecting…", disconnected: "Disconnected" })[status];
 }
+function sortedDevices() {
+  const rank = (device: Device) => device.status === "connected" ? 0 : device.status === "connecting" ? 1 : device.autoConnect ? 2 : snapshot.lastDeviceId === device.id ? 3 : 4;
+  return [...snapshot.devices].sort((left, right) => rank(left) - rank(right) || left.name.localeCompare(right.name, displayLanguage()));
+}
+function diagnosticsChecklist() {
+  const connected = snapshot.devices.filter((device) => device.status === "connected").length;
+  const connecting = snapshot.devices.filter((device) => device.status === "connecting").length;
+  const targets = snapshot.autoConnectDeviceIds.length;
+  const item = (ok: boolean, title: string, detail: string) => `<li class="diagnostic-item ${ok ? "ok" : "attention"}"><span aria-hidden="true">${ok ? "✓" : "!"}</span><div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(detail)}</p></div></li>`;
+  return `<ul class="diagnostic-list">
+    ${item(snapshot.devices.length > 0, tr("音声受信に利用できる端末", "Devices available for audio reception"), snapshot.devices.length > 0 ? tr(`${snapshot.devices.length}台見つかっています。`, `${snapshot.devices.length} device(s) found.`) : tr("ペアリングを確認してから再検索してください。", "Check pairing, then refresh the device list."))}
+    ${item(connected > 0 || connecting > 0, tr("現在の接続", "Current connections"), connecting > 0 ? tr(`${connected}台接続中、${connecting}台接続処理中です。`, `${connected} connected and ${connecting} connecting.`) : connected > 0 ? tr(`${connected}台接続中です。`, `${connected} connected.`) : tr("現在アプリが保持している接続はありません。", "The app is not currently holding a connection."))}
+    ${item(!snapshot.settings.autoConnect || targets > 0 || !!snapshot.lastDeviceId, tr("起動時の自動接続", "Startup auto-connect"), snapshot.settings.autoConnect ? targets > 0 ? tr(`${targets}台が対象です。`, `${targets} device(s) selected.`) : tr("最後に接続した端末が対象になります。", "The last connected device will be used.") : tr("無効です。必要な場合は通常画面の設定で有効にできます。", "Disabled. Enable it in the main window if needed."))}
+  </ul><p class="diagnostic-note">${tr("スマートフォン側やWindows側から切断した場合、表示は自動更新されません。対象端末を一度「切断」してから再接続してください。", "If the phone or Windows disconnects externally, the display is not updated automatically. Select Disconnect for that device before reconnecting.")}</p>`;
+}
+function diagnosticsDialog() {
+  return `<div class="log-backdrop" role="presentation"><section class="log-dialog diagnostics-dialog" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title"><div class="log-heading"><div><h2 id="diagnostics-title">${tr("セットアップ診断", "Setup diagnostics")}</h2><p>${tr("端末の検出状況と設定を確認します。", "Check device discovery and startup settings.")}</p></div><button class="ghost" id="close-diagnostics" aria-label="${tr("診断情報を閉じる", "Close diagnostics")}">${tr("閉じる", "Close")}</button></div>${diagnosticsChecklist()}<details class="technical-details"><summary>${tr("技術情報", "Technical details")}</summary><pre class="log-content diagnostics-content">${escapeHtml(diagnosticsContent)}</pre></details></section></div>`;
+}
+function renderQuick() {
+  const activeId = document.activeElement instanceof HTMLElement ? document.activeElement.id : "";
+  applyTheme();
+  document.body.classList.add("quick-mode");
+  document.body.classList.toggle("modal-open", diagnosticsOpen);
+  const connected = snapshot.devices.filter((device) => device.status === "connected").length;
+  const query = deviceSearch.trim().toLocaleLowerCase();
+  const devices = sortedDevices().filter((device) => {
+    const matchesFilter = deviceFilter === "all" || (deviceFilter === "connected" ? device.status !== "disconnected" : device.status === "disconnected");
+    return matchesFilter && (!query || device.name.toLocaleLowerCase().includes(query));
+  });
+  document.querySelector<HTMLDivElement>("#app")!.innerHTML = `<main class="quick-shell">
+    <header class="quick-header"><div class="brand"><img src="/icon.svg" aria-hidden="true"/><div><strong>Phone Audio Receiver</strong><span>${tr("クイック操作", "Quick controls")}</span></div></div><button class="ghost quick-close" id="close-quick" aria-label="${tr("閉じる", "Close")}">×</button></header>
+    <section class="quick-summary"><div><strong>${connected}</strong><span>${tr("台接続中", "connected")}</span></div><button class="secondary" id="quick-refresh">${tr("再検索", "Refresh")}</button></section>
+    <div class="quick-tools"><input id="device-search" type="search" value="${escapeHtml(deviceSearch)}" placeholder="${tr("端末名を検索", "Search devices")}" aria-label="${tr("端末名を検索", "Search devices")}"/><div class="filter-group" role="group" aria-label="${tr("端末の絞り込み", "Filter devices")}">${(["all", "connected", "disconnected"] as DeviceFilter[]).map((filter) => `<button class="filter-button ${deviceFilter === filter ? "active" : ""}" data-filter="${filter}">${filter === "all" ? tr("すべて", "All") : filter === "connected" ? tr("接続中", "Connected") : tr("未接続", "Disconnected")}</button>`).join("")}</div></div>
+    <section class="quick-devices" role="list">${devices.length ? devices.map((device) => `<article class="device quick-device ${device.status}" role="listitem"><span class="dot ${device.status}"></span><div class="device-name"><strong>${escapeHtml(device.name)}</strong><span>${statusText(device.status)}${device.autoConnect ? ` · ${tr("自動接続", "Auto-connect")}` : ""}</span>${deviceMessages.has(device.id) ? `<small>${escapeHtml(deviceMessages.get(device.id)!)}</small>` : ""}</div><button class="${device.status === "disconnected" ? "primary" : "secondary"}" data-device="${encodeURIComponent(device.id)}" data-action="${device.status === "disconnected" ? "connect" : "disconnect"}">${device.status === "disconnected" ? tr("接続", "Connect") : device.status === "connecting" ? tr("中止", "Cancel") : tr("切断", "Disconnect")}</button></article>`).join("") : `<div class="empty quick-empty"><strong>${tr("該当する端末がありません", "No matching devices")}</strong><span>${tr("検索条件を変更するか、再検索してください。", "Change the filter or refresh the device list.")}</span></div>`}</section>
+    <footer class="quick-footer"><span>${tr(`全${snapshot.devices.length}台`, `${snapshot.devices.length} total`)}</span><div class="quick-footer-actions"><button class="ghost" id="quick-diagnostics">${tr("セットアップ診断", "Setup diagnostics")}</button><button class="secondary" id="open-main-window">${tr("詳細画面を開く", "Open details")}</button></div></footer>
+    ${diagnosticsOpen ? diagnosticsDialog() : ""}
+  </main>`;
+  if (activeId) document.getElementById(activeId)?.focus();
+  document.querySelector("#close-quick")!.addEventListener("click", () => invoke("hide_quick_window"));
+  document.querySelector("#quick-refresh")!.addEventListener("click", refresh);
+  document.querySelector("#quick-diagnostics")!.addEventListener("click", showDiagnostics);
+  document.querySelector("#open-main-window")!.addEventListener("click", () => invoke("switch_to_main_window"));
+  document.querySelector("#close-diagnostics")?.addEventListener("click", () => { diagnosticsOpen = false; render(); });
+  document.querySelector<HTMLInputElement>("#device-search")!.addEventListener("input", (event) => { deviceSearch = (event.target as HTMLInputElement).value; render(); });
+  document.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((button) => button.addEventListener("click", () => { deviceFilter = button.dataset.filter as DeviceFilter; render(); }));
+  bindDeviceActions();
+}
 function render() {
+  if (quickMode) {
+    renderQuick();
+    return;
+  }
   const previousLogScroll = document.querySelector<HTMLElement>(".log-content")?.scrollTop;
   const activeId = document.activeElement instanceof HTMLElement ? document.activeElement.id : "";
   applyTheme();
@@ -39,15 +95,16 @@ function render() {
   document.body.classList.toggle("modal-open", logOpen || diagnosticsOpen);
   document.documentElement.classList.toggle("modal-open", logOpen || diagnosticsOpen);
   const connected = snapshot.devices.filter((device) => device.status === "connected").length;
+  const mainDevices = sortedDevices();
   document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <main class="shell">
       <header class="topbar">
         <div class="brand"><img src="/icon.svg" aria-hidden="true"/><span>Phone Audio Receiver</span></div>
-        <div class="actions"><button class="ghost language-toggle" id="toggle-language" title="${tr("英語表示に切り替える", "Switch to Japanese")}" aria-label="${tr("英語表示に切り替える", "Switch to Japanese")}"><span aria-hidden="true">文/A</span><strong>${tr("日本語", "English")}</strong></button><button class="ghost" id="open-log">${tr("ログ", "Log")}</button><button class="ghost" id="show-diagnostics">${tr("診断情報", "Diagnostics")}</button></div>
+        <div class="actions"><button class="ghost language-toggle" id="toggle-language" title="${tr("英語表示に切り替える", "Switch to Japanese")}" aria-label="${tr("英語表示に切り替える", "Switch to Japanese")}"><span aria-hidden="true">文/A</span><strong>${tr("日本語", "English")}</strong></button><button class="ghost" id="open-quick-window">${tr("クイック表示", "Quick view")}</button><button class="ghost" id="open-log">${tr("ログ", "Log")}</button><button class="ghost" id="show-diagnostics">${tr("セットアップ診断", "Setup diagnostics")}</button></div>
       </header>
       <section class="panel devices-panel">
         <div class="panel-heading"><div><div class="devices-title"><h2>${tr("接続端末", "Devices")}</h2><span class="connection-count" aria-live="polite"><strong>${connected}</strong>${tr("台接続中", "connected")}</span></div><p id="connection-progress">${escapeHtml(progress)}</p></div><button class="primary refresh-button" id="refresh">${tr("再検索", "Refresh")}</button></div>
-        <div class="devices" role="list">${snapshot.devices.length ? snapshot.devices.map((device) => `
+        <div class="devices" role="list">${mainDevices.length ? mainDevices.map((device) => `
           <article class="device ${device.status}" role="listitem">
             <div class="device-icon">♬</div><div class="device-name"><strong>${escapeHtml(device.name)}</strong><span>${statusText(device.status)}</span></div>
             <span class="dot ${device.status}"></span>
@@ -67,13 +124,14 @@ function render() {
       </section>
       <footer>Phone Audio Receiver${appVersion ? ` <span>v${escapeHtml(appVersion)}</span>` : ""}</footer>
       ${logOpen ? `<div class="log-backdrop" role="presentation"><section class="log-dialog" role="dialog" aria-modal="true" aria-labelledby="log-title"><div class="log-heading"><div><h2 id="log-title">${tr("アプリログ", "Application log")}</h2><p>${tr("直近30行を匿名化して表示しています。日時はJST（+09:00）です。", "Showing the latest 30 lines with personal data anonymized. Times are UTC (Z).")}</p></div><button class="ghost" id="close-log" aria-label="${tr("ログを閉じる", "Close log")}">${tr("閉じる", "Close")}</button></div><pre class="log-content">${escapeHtml(formatLog(logContent) || tr("ログはまだありません。", "No log entries yet."))}</pre><div class="log-actions"><button class="secondary" id="refresh-log">${tr("更新", "Refresh")}</button><button class="secondary" id="copy-log">${tr("匿名化済みログをコピー", "Copy anonymized log")}</button><button class="ghost" id="open-log-folder" title="${tr("生ログには端末名、Bluetooth ID、ユーザー環境のパスが含まれる場合があります", "Raw logs may contain device names, Bluetooth IDs, and paths from the user environment")}">${tr("生ログフォルダーを開く", "Open raw log folder")}</button></div></section></div>` : ""}
-      ${diagnosticsOpen ? `<div class="log-backdrop" role="presentation"><section class="log-dialog diagnostics-dialog" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title"><div class="log-heading"><h2 id="diagnostics-title">Phone Audio Receiver — ${tr("診断情報", "Diagnostics")}</h2><button class="ghost" id="close-diagnostics" aria-label="${tr("診断情報を閉じる", "Close diagnostics")}">${tr("閉じる", "Close")}</button></div><pre class="log-content diagnostics-content">${escapeHtml(diagnosticsContent)}</pre></section></div>` : ""}
+      ${diagnosticsOpen ? diagnosticsDialog() : ""}
     </main>`;
   const select = document.querySelector<HTMLSelectElement>("#theme")!; select.value = snapshot.settings.theme;
   if (previousLogScroll !== undefined) document.querySelector<HTMLElement>(".log-content")?.scrollTo({ top: previousLogScroll });
   if (activeId) document.getElementById(activeId)?.focus();
   document.querySelector("#refresh")!.addEventListener("click", refresh);
   document.querySelector("#toggle-language")!.addEventListener("click", toggleLanguage);
+  document.querySelector("#open-quick-window")!.addEventListener("click", () => invoke("switch_to_quick_window"));
   document.querySelector("#open-log")!.addEventListener("click", showLog);
   document.querySelector("#show-diagnostics")!.addEventListener("click", showDiagnostics);
   document.querySelector("#close-log")?.addEventListener("click", () => { logOpen = false; render(); });
@@ -81,11 +139,7 @@ function render() {
   document.querySelector("#refresh-log")?.addEventListener("click", showLog);
   document.querySelector("#copy-log")?.addEventListener("click", copyLog);
   document.querySelector("#open-log-folder")?.addEventListener("click", () => invoke("open_log_folder"));
-  document.querySelectorAll<HTMLButtonElement>("[data-device]").forEach((button) => button.addEventListener("click", async () => {
-    const id = decodeURIComponent(button.dataset.device!);
-    try { await invoke(button.dataset.action === "connect" ? "connect_device" : "disconnect_device", { deviceId: id }); }
-    catch (error) { setProgress(tr(`操作に失敗しました: ${error}`, `The operation failed: ${error}`)); }
-  }));
+  bindDeviceActions();
   document.querySelectorAll<HTMLButtonElement>("[data-auto-connect]").forEach((button) => button.addEventListener("click", async () => {
     const id = decodeURIComponent(button.dataset.autoConnect!);
     try {
@@ -95,6 +149,17 @@ function render() {
   }));
   document.querySelectorAll<HTMLInputElement>("input[data-setting]").forEach((input) => input.addEventListener("change", saveSettings));
   select.addEventListener("change", saveSettings);
+}
+function bindDeviceActions() {
+  document.querySelectorAll<HTMLButtonElement>("[data-device]").forEach((button) => button.addEventListener("click", async () => {
+    const id = decodeURIComponent(button.dataset.device!);
+    try { await invoke(button.dataset.action === "connect" ? "connect_device" : "disconnect_device", { deviceId: id }); }
+    catch (error) {
+      deviceMessages.set(id, String(error));
+      setProgress(tr(`操作に失敗しました: ${error}`, `The operation failed: ${error}`));
+      if (quickMode) render();
+    }
+  }));
 }
 function checkbox(key: keyof Settings, label: string, checked: boolean, disabled = false) { return `<label class="check"><input type="checkbox" data-setting="${key}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}/><span>${label}</span></label>`; }
 function escapeHtml(value: string) { const node = document.createElement("span"); node.textContent = value; return node.innerHTML; }
@@ -180,14 +245,18 @@ async function start() {
   try {
     appVersion = await getVersion();
     await listen<Snapshot>("app-state-changed", (event) => { snapshot = event.payload; render(); });
-    await listen<{ deviceId: string; message: string }>("connection-progress", (event) => { setProgress(event.payload.message); });
+    await listen<{ deviceId: string; message: string }>("connection-progress", (event) => {
+      deviceMessages.set(event.payload.deviceId, event.payload.message);
+      setProgress(event.payload.message);
+      if (quickMode) render();
+    });
     await listen<ConnectionEvent>("connection-state-changed", (event) => {
       void notifyConnection(event.payload);
     });
     snapshot = await invoke<Snapshot>("app_snapshot");
     render();
-    await refresh();
-    if (snapshot.settings.autoConnect) {
+    if (!quickMode) await refresh();
+    if (!quickMode && snapshot.settings.autoConnect) {
       const targets = snapshot.autoConnectDeviceIds.length ? snapshot.autoConnectDeviceIds : snapshot.lastDeviceId ? [snapshot.lastDeviceId] : [];
       for (const device of snapshot.devices.filter((candidate) => targets.includes(candidate.id) && candidate.status === "disconnected")) {
         await invoke("connect_device", { deviceId: device.id });
