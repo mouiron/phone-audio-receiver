@@ -220,11 +220,44 @@ fn emit_snapshot(app: &AppHandle, state: &AppState) {
     }
 }
 
-fn tray_status_rank(status: &str) -> u8 {
-    match status {
-        "connected" => 0,
-        "connecting" => 1,
-        _ => 2,
+fn sort_devices_by_name(devices: &mut [DeviceView]) {
+    devices.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+#[cfg(test)]
+mod device_sort_tests {
+    use super::*;
+
+    fn device(id: &str, name: &str, status: &str) -> DeviceView {
+        DeviceView {
+            id: id.to_string(),
+            name: name.to_string(),
+            status: status.to_string(),
+            auto_connect: false,
+        }
+    }
+
+    #[test]
+    fn device_name_order_does_not_change_with_connection_status() {
+        let mut devices = vec![
+            device("b", "Phone B", "connected"),
+            device("a", "Phone A", "disconnected"),
+        ];
+        sort_devices_by_name(&mut devices);
+        assert_eq!(devices[0].id, "a");
+        assert_eq!(devices[1].id, "b");
+
+        devices[0].status = "connected".to_string();
+        devices[1].status = "disconnected".to_string();
+        sort_devices_by_name(&mut devices);
+        assert_eq!(devices[0].id, "a");
+        assert_eq!(devices[1].id, "b");
     }
 }
 
@@ -242,17 +275,7 @@ fn update_tray_menu(app: &AppHandle, state: &AppState, value: &AppSnapshot) -> t
         .filter(|device| device.status == "connected")
         .count();
     let mut devices = value.devices.clone();
-    devices.sort_by(|left, right| {
-        tray_status_rank(&left.status)
-            .cmp(&tray_status_rank(&right.status))
-            .then_with(|| right.auto_connect.cmp(&left.auto_connect))
-            .then_with(|| {
-                let left_last = value.last_device_id.as_deref() == Some(left.id.as_str());
-                let right_last = value.last_device_id.as_deref() == Some(right.id.as_str());
-                right_last.cmp(&left_last)
-            })
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-    });
+    sort_devices_by_name(&mut devices);
 
     let menu = Menu::new(app)?;
     let summary_label = match language {

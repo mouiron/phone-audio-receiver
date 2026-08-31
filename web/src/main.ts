@@ -37,8 +37,8 @@ function statusText(status: Device["status"]) {
     : ({ connected: "Connected", connecting: "Connecting…", disconnected: "Disconnected" })[status];
 }
 function sortedDevices() {
-  const rank = (device: Device) => device.status === "connected" ? 0 : device.status === "connecting" ? 1 : device.autoConnect ? 2 : snapshot.lastDeviceId === device.id ? 3 : 4;
-  return [...snapshot.devices].sort((left, right) => rank(left) - rank(right) || left.name.localeCompare(right.name, displayLanguage()));
+  const collator = new Intl.Collator(displayLanguage(), { sensitivity: "base" });
+  return [...snapshot.devices].sort((left, right) => collator.compare(left.name, right.name) || left.id.localeCompare(right.id));
 }
 function diagnosticsChecklist() {
   const connected = snapshot.devices.filter((device) => device.status === "connected").length;
