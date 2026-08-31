@@ -197,9 +197,13 @@ fn snapshot(state: &AppState) -> AppSnapshot {
         devices,
         last_device_id: saved.last_device_id.clone(),
         auto_connect_device_ids: saved.auto_connect_device_ids.clone(),
-        display_language: match i18n::system_language() {
-            i18n::Language::Japanese => "ja",
-            i18n::Language::English => "en",
+        display_language: match saved.display_language {
+            Some(config::DisplayLanguage::Japanese) => "ja",
+            Some(config::DisplayLanguage::English) => "en",
+            None => match i18n::system_language() {
+                i18n::Language::Japanese => "ja",
+                i18n::Language::English => "en",
+            },
         }
         .to_string(),
         settings: saved.into(),
@@ -228,7 +232,10 @@ fn update_tray_menu(app: &AppHandle, state: &AppState, value: &AppSnapshot) -> t
     let Some(tray) = app.tray_by_id("main") else {
         return Ok(());
     };
-    let language = i18n::system_language();
+    let language = match value.display_language.as_str() {
+        "ja" => i18n::Language::Japanese,
+        _ => i18n::Language::English,
+    };
     let connected = value
         .devices
         .iter()
@@ -649,6 +656,25 @@ fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<
 }
 
 #[tauri::command]
+fn set_display_language(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    language: String,
+) -> Result<(), String> {
+    let display_language = match language.as_str() {
+        "ja" => config::DisplayLanguage::Japanese,
+        "en" => config::DisplayLanguage::English,
+        _ => return Err("Unsupported display language".to_string()),
+    };
+    config::update(|saved| {
+        saved.display_language = Some(display_language);
+        Ok(())
+    })?;
+    emit_snapshot(&app, state.inner().as_ref());
+    Ok(())
+}
+
+#[tauri::command]
 fn diagnostics() -> String {
     #[cfg(debug_assertions)]
     {
@@ -924,6 +950,7 @@ pub fn run() {
             disconnect_device,
             set_device_auto_connect,
             save_settings,
+            set_display_language,
             diagnostics,
             open_log_folder,
             recent_log,

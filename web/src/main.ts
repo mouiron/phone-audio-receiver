@@ -100,7 +100,7 @@ function render() {
     <main class="shell">
       <header class="topbar">
         <div class="brand"><img src="/icon.svg" aria-hidden="true"/><span>Phone Audio Receiver</span></div>
-        <div class="actions"><button class="ghost language-toggle" id="toggle-language" title="${tr("英語表示に切り替える", "Switch to Japanese")}" aria-label="${tr("英語表示に切り替える", "Switch to Japanese")}"><span aria-hidden="true">文/A</span><strong>${tr("日本語", "English")}</strong></button><button class="ghost" id="open-quick-window">${tr("クイック表示", "Quick view")}</button><button class="ghost" id="open-log">${tr("ログ", "Log")}</button><button class="ghost" id="show-diagnostics">${tr("セットアップ診断", "Setup diagnostics")}</button></div>
+        <div class="actions"><div class="language-toggle" role="group" aria-label="${tr("表示言語", "Display language")}"><button type="button" data-language="ja" class="${displayLanguage() === "ja" ? "active" : ""}" aria-pressed="${displayLanguage() === "ja"}">日本語</button><button type="button" data-language="en" class="${displayLanguage() === "en" ? "active" : ""}" aria-pressed="${displayLanguage() === "en"}">EN</button></div><button class="ghost" id="open-quick-window">${tr("クイック表示", "Quick view")}</button><button class="ghost" id="open-log">${tr("ログ", "Log")}</button><button class="ghost" id="show-diagnostics">${tr("セットアップ診断", "Setup diagnostics")}</button></div>
       </header>
       <section class="panel devices-panel">
         <div class="panel-heading"><div><div class="devices-title"><h2>${tr("接続端末", "Devices")}</h2><span class="connection-count" aria-live="polite"><strong>${connected}</strong>${tr("台接続中", "connected")}</span></div><p id="connection-progress">${escapeHtml(progress)}</p></div><button class="primary refresh-button" id="refresh">${tr("再検索", "Refresh")}</button></div>
@@ -130,7 +130,7 @@ function render() {
   if (previousLogScroll !== undefined) document.querySelector<HTMLElement>(".log-content")?.scrollTo({ top: previousLogScroll });
   if (activeId) document.getElementById(activeId)?.focus();
   document.querySelector("#refresh")!.addEventListener("click", refresh);
-  document.querySelector("#toggle-language")!.addEventListener("click", toggleLanguage);
+  document.querySelectorAll<HTMLButtonElement>("[data-language]").forEach((button) => button.addEventListener("click", () => setLanguage(button.dataset.language as Snapshot["displayLanguage"])));
   document.querySelector("#open-quick-window")!.addEventListener("click", () => invoke("switch_to_quick_window"));
   document.querySelector("#open-log")!.addEventListener("click", showLog);
   document.querySelector("#show-diagnostics")!.addEventListener("click", showDiagnostics);
@@ -180,10 +180,19 @@ function formatLogTimestamp(epochSeconds: number) {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${jst.getUTCFullYear()}-${pad(jst.getUTCMonth() + 1)}-${pad(jst.getUTCDate())} ${pad(jst.getUTCHours())}:${pad(jst.getUTCMinutes())}:${pad(jst.getUTCSeconds())}+09:00`;
 }
-function toggleLanguage() {
-  languageOverride = displayLanguage() === "ja" ? "en" : "ja";
+async function setLanguage(language: Snapshot["displayLanguage"]) {
+  if (language === displayLanguage()) return;
+  const previousLanguage = displayLanguage();
+  languageOverride = language;
   progress = tr("表示言語を日本語に切り替えました。", "Display language changed to English.");
   render();
+  try {
+    await invoke("set_display_language", { language });
+  } catch (error) {
+    languageOverride = previousLanguage;
+    progress = tr(`表示言語を保存できませんでした: ${error}`, `Could not save the display language: ${error}`);
+    render();
+  }
 }
 async function refresh() { setProgress(tr("Bluetooth デバイスを検索しています…", "Searching for Bluetooth devices…")); try { snapshot = await invoke<Snapshot>("refresh_devices"); progress = snapshot.devices.length ? tr(`${snapshot.devices.length} 台の端末を見つけました。`, `Found ${snapshot.devices.length} device${snapshot.devices.length === 1 ? "" : "s"}.`) : tr("利用できるペア済み端末は見つかりませんでした。", "No paired devices are currently available."); } catch (error) { progress = tr(`検索できませんでした: ${error}`, `Could not search for devices: ${error}`); } render(); }
 async function saveSettings() {

@@ -5,7 +5,7 @@
 //! 覚えておけるようにする。ファイル1個で完結する単純なJSON永続化なので、
 //! DBやレジストリは使わない(SREの感覚で言えば「状態はファイルに素直に書く」方針)。
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -30,6 +30,27 @@ pub enum ThemePreference {
     Light,
     System,
     Dark,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayLanguage {
+    Japanese,
+    English,
+}
+
+fn deserialize_display_language<'de, D>(
+    deserializer: D,
+) -> Result<Option<DisplayLanguage>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(match value.as_deref() {
+        Some("ja" | "japanese") => Some(DisplayLanguage::Japanese),
+        Some("en" | "english") => Some(DisplayLanguage::English),
+        _ => None,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +83,10 @@ pub struct AppConfig {
     /// GUIは現在ライトテーマに固定し、起動時にLightへ移行する。
     #[serde(default)]
     pub theme: ThemePreference,
+    /// ユーザーが画面上で明示的に選択した表示言語。
+    /// 未選択の既存設定ではWindowsの優先表示言語を使用する。
+    #[serde(default, deserialize_with = "deserialize_display_language")]
+    pub display_language: Option<DisplayLanguage>,
 }
 
 fn default_true() -> bool {
@@ -80,6 +105,7 @@ impl Default for AppConfig {
             launch_at_login: false,
             start_minimized: true,
             theme: ThemePreference::Light,
+            display_language: None,
         }
     }
 }
@@ -494,5 +520,27 @@ mod tests {
         assert!(config.auto_connect);
         let serialized = serde_json::to_string(&config).expect("config should serialize");
         assert!(!serialized.contains("reconnect_on_disconnect"));
+    }
+
+    #[test]
+    fn display_language_is_optional_and_round_trips() {
+        let legacy: AppConfig = serde_json::from_str(r#"{"auto_connect":true}"#)
+            .expect("config without a language should remain readable");
+        assert_eq!(legacy.display_language, None);
+
+        let config = AppConfig {
+            display_language: Some(DisplayLanguage::English),
+            ..AppConfig::default()
+        };
+        let serialized = serde_json::to_string(&config).expect("config should serialize");
+        let restored: AppConfig =
+            serde_json::from_str(&serialized).expect("saved config should remain readable");
+        assert_eq!(restored.display_language, Some(DisplayLanguage::English));
+
+        let invalid: AppConfig =
+            serde_json::from_str(r#"{"auto_connect":true,"display_language":"invalid"}"#)
+                .expect("an unsupported language should not invalidate other settings");
+        assert!(invalid.auto_connect);
+        assert_eq!(invalid.display_language, None);
     }
 }
