@@ -1,7 +1,7 @@
 {
   "name": "bluetooth-phone-audio-receiver-ui",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "mouiron",
   "license": "MIT",
   "repository": "https://github.com/mouiron/phone-audio-receiver",

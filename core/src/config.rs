@@ -6,6 +6,7 @@
 //! DBやレジストリは使わない(SREの感覚で言えば「状態はファイルに素直に書く」方針)。
 
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -37,6 +38,16 @@ pub enum ThemePreference {
 pub enum DisplayLanguage {
     Japanese,
     English,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DevicePreference {
+    #[serde(default)]
+    pub alias: String,
+    #[serde(default)]
+    pub favorite: bool,
+    #[serde(default)]
+    pub tray_pinned: bool,
 }
 
 fn deserialize_display_language<'de, D>(
@@ -87,6 +98,12 @@ pub struct AppConfig {
     /// 未選択の既存設定ではWindowsの優先表示言語を使用する。
     #[serde(default, deserialize_with = "deserialize_display_language")]
     pub display_language: Option<DisplayLanguage>,
+    /// 端末IDを主キーとする表示専用設定。接続先の識別には値を使用しない。
+    #[serde(default)]
+    pub device_preferences: HashMap<String, DevicePreference>,
+    /// 通常画面、クイック操作、トレイで共通利用する端末IDの表示順。
+    #[serde(default)]
+    pub device_order: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -106,6 +123,8 @@ impl Default for AppConfig {
             start_minimized: true,
             theme: ThemePreference::Light,
             display_language: None,
+            device_preferences: HashMap::new(),
+            device_order: Vec::new(),
         }
     }
 }
@@ -542,5 +561,26 @@ mod tests {
                 .expect("an unsupported language should not invalidate other settings");
         assert!(invalid.auto_connect);
         assert_eq!(invalid.display_language, None);
+    }
+
+    #[test]
+    fn device_display_preferences_are_keyed_by_device_id_and_round_trip() {
+        let mut config = AppConfig::default();
+        config.device_preferences.insert(
+            "device-a".to_string(),
+            DevicePreference {
+                alias: "Desk phone".to_string(),
+                favorite: true,
+                tray_pinned: true,
+            },
+        );
+        config.device_order = vec!["device-b".to_string(), "device-a".to_string()];
+
+        let serialized = serde_json::to_string(&config).expect("config should serialize");
+        let restored: AppConfig =
+            serde_json::from_str(&serialized).expect("config should deserialize");
+
+        assert_eq!(restored.device_preferences, config.device_preferences);
+        assert_eq!(restored.device_order, config.device_order);
     }
 }

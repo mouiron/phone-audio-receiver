@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bluetooth_phone_audio_receiver_core::{bt, config, i18n};
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ use tauri::{
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder,
 };
+use tauri_plugin_notification::NotificationExt;
 use windows::core::{w, PCWSTR};
 use windows::Media::Audio::AudioPlaybackConnection;
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND};
@@ -60,12 +62,20 @@ struct Runtime {
     devices: Vec<bt::DeviceEntry>,
     connections: HashMap<String, AudioPlaybackConnection>,
     connecting: HashMap<String, PendingConnection>,
+    disconnect_timers: HashMap<String, DisconnectTimer>,
     next_request_id: u64,
+    next_timer_id: u64,
 }
 
 struct PendingConnection {
     request_id: u64,
     cancel: Arc<AtomicBool>,
+}
+
+struct DisconnectTimer {
+    timer_id: u64,
+    cancel: Arc<AtomicBool>,
+    deadline_epoch_seconds: u64,
 }
 
 struct AppState {
@@ -130,8 +140,13 @@ fn hide_window_for_tray<R: tauri::Runtime>(window: &tauri::Window<R>) {
 struct DeviceView {
     id: String,
     name: String,
+    system_name: String,
     status: String,
     auto_connect: bool,
+    disconnect_timer_deadline: Option<u64>,
+    favorite: bool,
+    tray_pinned: bool,
+    order_index: Option<usize>,
 }
 
 #[derive(Clone, Serialize)]
@@ -173,24 +188,45 @@ impl From<config::AppConfig> for Settings {
     }
 }
 
+fn configured_device_name(saved: &config::AppConfig, device_id: &str, system_name: &str) -> String {
+    saved
+        .device_preferences
+        .get(device_id)
+        .map(|value| value.alias.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(system_name)
+        .to_string()
+}
+
 fn snapshot(state: &AppState) -> AppSnapshot {
     let saved = config::load();
     let runtime = state.runtime.lock().expect("runtime lock poisoned");
     let devices = runtime
         .devices
         .iter()
-        .map(|device| DeviceView {
-            id: device.id.clone(),
-            name: device.name.clone(),
-            status: if runtime.connections.contains_key(&device.id) {
-                "connected"
-            } else if runtime.connecting.contains_key(&device.id) {
-                "connecting"
-            } else {
-                "disconnected"
+        .map(|device| {
+            let preference = saved.device_preferences.get(&device.id);
+            DeviceView {
+                id: device.id.clone(),
+                name: configured_device_name(&saved, &device.id, &device.name),
+                system_name: device.name.clone(),
+                status: if runtime.connections.contains_key(&device.id) {
+                    "connected"
+                } else if runtime.connecting.contains_key(&device.id) {
+                    "connecting"
+                } else {
+                    "disconnected"
+                }
+                .to_string(),
+                auto_connect: saved.auto_connect_device_ids.contains(&device.id),
+                disconnect_timer_deadline: runtime
+                    .disconnect_timers
+                    .get(&device.id)
+                    .map(|timer| timer.deadline_epoch_seconds),
+                favorite: preference.is_some_and(|value| value.favorite),
+                tray_pinned: preference.is_some_and(|value| value.tray_pinned),
+                order_index: saved.device_order.iter().position(|id| id == &device.id),
             }
-            .to_string(),
-            auto_connect: saved.auto_connect_device_ids.contains(&device.id),
         })
         .collect();
     AppSnapshot {
@@ -222,12 +258,55 @@ fn emit_snapshot(app: &AppHandle, state: &AppState) {
 
 fn sort_devices_by_name(devices: &mut [DeviceView]) {
     devices.sort_by(|left, right| {
-        left.name
-            .to_lowercase()
-            .cmp(&right.name.to_lowercase())
+        left.order_index
+            .unwrap_or(usize::MAX)
+            .cmp(&right.order_index.unwrap_or(usize::MAX))
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
             .then_with(|| left.name.cmp(&right.name))
             .then_with(|| left.id.cmp(&right.id))
     });
+}
+
+const DISCONNECT_TIMER_MINUTES: [u64; 4] = [15, 30, 60, 120];
+
+fn cancel_disconnect_timer(runtime: &mut Runtime, device_id: &str) -> bool {
+    if let Some(timer) = runtime.disconnect_timers.remove(device_id) {
+        timer.cancel.store(true, Ordering::Release);
+        true
+    } else {
+        false
+    }
+}
+
+fn wait_for_timer(duration: Duration, cancel: &AtomicBool) -> bool {
+    let deadline = std::time::Instant::now() + duration;
+    while std::time::Instant::now() < deadline {
+        if cancel.load(Ordering::Acquire) {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        thread::sleep(remaining.min(Duration::from_secs(1)));
+    }
+    !cancel.load(Ordering::Acquire)
+}
+
+fn move_device_id(ids: &mut [String], device_id: &str, direction: &str) -> bool {
+    let Some(index) = ids.iter().position(|id| id == device_id) else {
+        return false;
+    };
+    let target = if direction == "up" {
+        index.checked_sub(1)
+    } else if direction == "down" && index + 1 < ids.len() {
+        Some(index + 1)
+    } else {
+        None
+    };
+    if let Some(target) = target {
+        ids.swap(index, target);
+        true
+    } else {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -238,8 +317,13 @@ mod device_sort_tests {
         DeviceView {
             id: id.to_string(),
             name: name.to_string(),
+            system_name: name.to_string(),
             status: status.to_string(),
             auto_connect: false,
+            disconnect_timer_deadline: None,
+            favorite: false,
+            tray_pinned: false,
+            order_index: None,
         }
     }
 
@@ -259,6 +343,42 @@ mod device_sort_tests {
         assert_eq!(devices[0].id, "a");
         assert_eq!(devices[1].id, "b");
     }
+
+    #[test]
+    fn cancelling_one_disconnect_timer_keeps_the_other_device_timer() {
+        let mut runtime = Runtime::default();
+        for (timer_id, device_id) in [(1, "device-a"), (2, "device-b")] {
+            runtime.disconnect_timers.insert(
+                device_id.to_string(),
+                DisconnectTimer {
+                    timer_id,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    deadline_epoch_seconds: 1_000,
+                },
+            );
+        }
+
+        assert!(cancel_disconnect_timer(&mut runtime, "device-a"));
+        assert!(!runtime.disconnect_timers.contains_key("device-a"));
+        assert_eq!(runtime.disconnect_timers["device-b"].timer_id, 2);
+        assert!(!runtime.disconnect_timers["device-b"]
+            .cancel
+            .load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn moving_a_device_changes_only_the_matching_id() {
+        let mut ids = vec![
+            "device-a".to_string(),
+            "device-b".to_string(),
+            "device-c".to_string(),
+        ];
+
+        assert!(move_device_id(&mut ids, "device-b", "up"));
+        assert_eq!(ids, ["device-b", "device-a", "device-c"]);
+        assert!(!move_device_id(&mut ids, "unknown", "down"));
+        assert_eq!(ids, ["device-b", "device-a", "device-c"]);
+    }
 }
 
 fn update_tray_menu(app: &AppHandle, state: &AppState, value: &AppSnapshot) -> tauri::Result<()> {
@@ -276,6 +396,17 @@ fn update_tray_menu(app: &AppHandle, state: &AppState, value: &AppSnapshot) -> t
         .count();
     let mut devices = value.devices.clone();
     sort_devices_by_name(&mut devices);
+    devices.sort_by_key(|device| {
+        if device.tray_pinned {
+            0
+        } else if device.status != "disconnected" {
+            1
+        } else if device.favorite {
+            2
+        } else {
+            3
+        }
+    });
 
     let menu = Menu::new(app)?;
     let summary_label = match language {
@@ -567,7 +698,8 @@ fn connect_device(
             config::append_log(&format!("最終接続端末を保存できません: {error}"));
         }
         config::append_log(&format!("接続しました: {name}"));
-        emit_connection_event(&app, device_id, name, "connected");
+        let display_name = configured_device_name(&config::load(), &device_id, &name);
+        emit_connection_event(&app, device_id, display_name, "connected");
     } else if let Some(message) = failure.as_ref() {
         config::append_log(&format!("接続エラー: {name}: {message}"));
         let _ = app.emit(
@@ -600,6 +732,7 @@ fn disconnect_device(
             .runtime
             .lock()
             .map_err(|_| "状態のロックに失敗しました")?;
+        cancel_disconnect_timer(&mut runtime, &device_id);
         (
             runtime.connecting.remove(&device_id),
             runtime.connections.remove(&device_id),
@@ -618,6 +751,162 @@ fn disconnect_device(
     config::append_log(&format!("手動切断/キャンセル: {device_id}"));
     emit_snapshot(&app, state.inner().as_ref());
     close_result
+}
+
+fn disconnect_timer_is_current(state: &AppState, device_id: &str, timer_id: u64) -> bool {
+    state.runtime.lock().ok().is_some_and(|runtime| {
+        runtime
+            .disconnect_timers
+            .get(device_id)
+            .is_some_and(|timer| timer.timer_id == timer_id)
+            && runtime.connections.contains_key(device_id)
+    })
+}
+
+fn disconnect_device_for_timer(app: &AppHandle, state: &AppState, device_id: &str, timer_id: u64) {
+    let claimed = {
+        let Ok(mut runtime) = state.runtime.lock() else {
+            config::append_log("切断タイマー満了時に状態のロックに失敗しました。");
+            return;
+        };
+        let is_current = runtime
+            .disconnect_timers
+            .get(device_id)
+            .is_some_and(|timer| timer.timer_id == timer_id);
+        if !is_current {
+            None
+        } else {
+            runtime.disconnect_timers.remove(device_id);
+            let name = runtime
+                .devices
+                .iter()
+                .find(|device| device.id == device_id)
+                .map(|device| device.name.clone())
+                .unwrap_or_else(|| device_id.to_string());
+            runtime
+                .connections
+                .remove(device_id)
+                .map(|connection| (name, connection))
+        }
+    };
+
+    let Some((name, connection)) = claimed else {
+        return;
+    };
+    match connection.Close() {
+        Ok(()) => {
+            config::append_log(&format!("切断タイマーにより切断しました: {name}"));
+            let display_name = configured_device_name(&config::load(), device_id, &name);
+            emit_connection_event(app, device_id.to_string(), display_name, "disconnected");
+        }
+        Err(error) => config::append_log(&format!(
+            "切断タイマーによる対象端末のCloseに失敗しました: {error:?}"
+        )),
+    }
+    emit_snapshot(app, state);
+}
+
+#[tauri::command]
+fn set_disconnect_timer(
+    app: AppHandle,
+    device_id: String,
+    minutes: u64,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if minutes != 0 && !DISCONNECT_TIMER_MINUTES.contains(&minutes) {
+        return Err("対応していないタイマー時間です。".to_string());
+    }
+
+    if minutes == 0 {
+        let removed = {
+            let mut runtime = state
+                .runtime
+                .lock()
+                .map_err(|_| "状態のロックに失敗しました")?;
+            cancel_disconnect_timer(&mut runtime, &device_id)
+        };
+        if removed {
+            config::append_log("切断タイマーを解除しました。");
+            emit_snapshot(&app, state.inner().as_ref());
+        }
+        return Ok(());
+    }
+
+    let duration = Duration::from_secs(minutes * 60);
+    let deadline_epoch_seconds = SystemTime::now()
+        .checked_add(duration)
+        .and_then(|deadline| deadline.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .ok_or_else(|| "切断タイマーの期限を計算できませんでした。".to_string())?;
+    let (name, timer_id, cancel) = {
+        let mut runtime = state
+            .runtime
+            .lock()
+            .map_err(|_| "状態のロックに失敗しました")?;
+        if !runtime.connections.contains_key(&device_id) {
+            return Err("接続中の端末にだけ切断タイマーを設定できます。".to_string());
+        }
+        let name = runtime
+            .devices
+            .iter()
+            .find(|device| device.id == device_id)
+            .map(|device| device.name.clone())
+            .ok_or_else(|| "デバイスが一覧にありません。再検索してください。".to_string())?;
+        cancel_disconnect_timer(&mut runtime, &device_id);
+        runtime.next_timer_id += 1;
+        let timer_id = runtime.next_timer_id;
+        let cancel = Arc::new(AtomicBool::new(false));
+        runtime.disconnect_timers.insert(
+            device_id.clone(),
+            DisconnectTimer {
+                timer_id,
+                cancel: Arc::clone(&cancel),
+                deadline_epoch_seconds,
+            },
+        );
+        (name, timer_id, cancel)
+    };
+
+    config::append_log(&format!("切断タイマーを設定しました: {name} ({minutes}分)"));
+    let display_name = configured_device_name(&config::load(), &device_id, &name);
+    emit_snapshot(&app, state.inner().as_ref());
+
+    let timer_app = app.clone();
+    let timer_state = Arc::clone(state.inner());
+    thread::spawn(move || {
+        let warning_delay = duration.saturating_sub(Duration::from_secs(60));
+        if !wait_for_timer(warning_delay, &cancel)
+            || !disconnect_timer_is_current(&timer_state, &device_id, timer_id)
+        {
+            return;
+        }
+
+        let language = match config::load().display_language {
+            Some(config::DisplayLanguage::Japanese) => i18n::Language::Japanese,
+            Some(config::DisplayLanguage::English) => i18n::Language::English,
+            None => i18n::system_language(),
+        };
+        let body = match language {
+            i18n::Language::Japanese => format!("{display_name} を1分後に切断します。"),
+            i18n::Language::English => {
+                format!("{display_name} will be disconnected in 1 minute.")
+            }
+        };
+        if let Err(error) = timer_app
+            .notification()
+            .builder()
+            .title("Phone Audio Receiver")
+            .body(body)
+            .show()
+        {
+            config::append_log(&format!("切断タイマーの事前通知に失敗しました: {error}"));
+        }
+
+        if wait_for_timer(Duration::from_secs(60), &cancel) {
+            disconnect_device_for_timer(&timer_app, timer_state.as_ref(), &device_id, timer_id);
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -648,6 +937,109 @@ fn set_device_auto_connect(
     config::append_log(&format!(
         "端末ごとの自動接続設定を変更しました: {device_id} ({enabled})"
     ));
+    emit_snapshot(&app, state.inner().as_ref());
+    Ok(())
+}
+
+fn ensure_known_device(state: &AppState, device_id: &str) -> Result<(), String> {
+    let runtime = state
+        .runtime
+        .lock()
+        .map_err(|_| "状態のロックに失敗しました")?;
+    if runtime.devices.iter().any(|device| device.id == device_id) {
+        Ok(())
+    } else {
+        Err("デバイスが一覧にありません。再検索してください。".to_string())
+    }
+}
+
+#[tauri::command]
+fn set_device_alias(
+    app: AppHandle,
+    device_id: String,
+    alias: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    ensure_known_device(state.inner().as_ref(), &device_id)?;
+    let alias = alias.trim().to_string();
+    if alias.chars().count() > 80 || alias.chars().any(char::is_control) {
+        return Err("表示名は制御文字を含まない80文字以内で入力してください。".to_string());
+    }
+    config::update(|saved| {
+        let preference = saved
+            .device_preferences
+            .entry(device_id.clone())
+            .or_default();
+        preference.alias = alias.clone();
+        Ok(())
+    })?;
+    config::append_log("端末の表示名設定を変更しました。");
+    emit_snapshot(&app, state.inner().as_ref());
+    Ok(())
+}
+
+#[tauri::command]
+fn set_device_favorite(
+    app: AppHandle,
+    device_id: String,
+    enabled: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    ensure_known_device(state.inner().as_ref(), &device_id)?;
+    config::update(|saved| {
+        saved
+            .device_preferences
+            .entry(device_id.clone())
+            .or_default()
+            .favorite = enabled;
+        Ok(())
+    })?;
+    emit_snapshot(&app, state.inner().as_ref());
+    Ok(())
+}
+
+#[tauri::command]
+fn set_device_tray_pinned(
+    app: AppHandle,
+    device_id: String,
+    enabled: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    ensure_known_device(state.inner().as_ref(), &device_id)?;
+    config::update(|saved| {
+        saved
+            .device_preferences
+            .entry(device_id.clone())
+            .or_default()
+            .tray_pinned = enabled;
+        Ok(())
+    })?;
+    emit_snapshot(&app, state.inner().as_ref());
+    Ok(())
+}
+
+#[tauri::command]
+fn move_device(
+    app: AppHandle,
+    device_id: String,
+    direction: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if direction != "up" && direction != "down" {
+        return Err("対応していない移動方向です。".to_string());
+    }
+    ensure_known_device(state.inner().as_ref(), &device_id)?;
+
+    let mut visible = snapshot(state.inner().as_ref()).devices;
+    sort_devices_by_name(&mut visible);
+    let mut ids: Vec<String> = visible.into_iter().map(|device| device.id).collect();
+    if !move_device_id(&mut ids, &device_id, &direction) {
+        return Ok(());
+    }
+    config::update(|saved| {
+        saved.device_order = ids.clone();
+        Ok(())
+    })?;
     emit_snapshot(&app, state.inner().as_ref());
     Ok(())
 }
@@ -725,6 +1117,32 @@ fn open_log_folder() -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| error.to_string())
+}
+
+fn open_with_explorer(target: &str, description: &str) -> Result<(), String> {
+    std::process::Command::new("explorer.exe")
+        .arg(target)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("{description}を開けませんでした: {error}"))
+}
+
+#[tauri::command]
+fn open_bluetooth_settings() -> Result<(), String> {
+    open_with_explorer("ms-settings:bluetooth", "Bluetooth設定")
+}
+
+#[tauri::command]
+fn open_sound_settings() -> Result<(), String> {
+    open_with_explorer("ms-settings:sound", "サウンド設定")
+}
+
+#[tauri::command]
+fn open_release_page() -> Result<(), String> {
+    open_with_explorer(
+        "https://github.com/mouiron/phone-audio-receiver/releases/latest",
+        "GitHub Releases",
+    )
 }
 
 #[tauri::command]
@@ -971,11 +1389,19 @@ pub fn run() {
             refresh_devices,
             connect_device,
             disconnect_device,
+            set_disconnect_timer,
             set_device_auto_connect,
+            set_device_alias,
+            set_device_favorite,
+            set_device_tray_pinned,
+            move_device,
             save_settings,
             set_display_language,
             diagnostics,
             open_log_folder,
+            open_bluetooth_settings,
+            open_sound_settings,
+            open_release_page,
             recent_log,
             hide_quick_window,
             switch_to_main_window,
