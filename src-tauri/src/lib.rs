@@ -1320,7 +1320,6 @@ fn run_portable_unblock_helper() {
     let _ = Command::new("cmd.exe")
         .args(["/D", "/S", "/C"])
         .arg(command_line)
-        .env("PHONE_AUDIO_RECEIVER_EXE", executable)
         .creation_flags(CREATE_NO_WINDOW)
         .status();
 }
@@ -1449,6 +1448,9 @@ pub fn run() {
                     );
                     api.prevent_close();
                     hide_window_for_tray(window);
+                } else {
+                    api.prevent_close();
+                    window.app_handle().exit(0);
                 }
             }
         })
