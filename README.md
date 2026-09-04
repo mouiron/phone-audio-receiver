@@ -4,7 +4,7 @@
 
 Phone Audio Receiver turns a Windows PC into a Bluetooth audio receiver for paired smartphones. The application UI supports Japanese and English.
 
-> バージョン1.0.3では、2台のスマートフォンによる同時接続と個別切断を実機確認済みです。アプリ内に台数制限はありませんが、3台以上の同時接続は未検証で、Bluetoothアダプターやドライバーに依存します。
+> 2台のスマートフォンによる同時接続と個別切断は実機確認済みです。アプリ内に台数制限はありませんが、3台以上の同時接続は未検証で、Bluetoothアダプターやドライバーに依存します。
 
 ## スクリーンショット
 
