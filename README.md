@@ -27,7 +27,12 @@ Phone Audio Receiver turns a Windows PC into a Bluetooth audio receiver for pair
 
 インストーラー版はすべてのWindowsユーザー用として`Program Files`配下へインストールされ、インストールとアンインストールには管理者権限が必要です。ポータブル版はzipを任意のローカルフォルダーへ展開し、`Phone Audio Receiver.exe`を実行します。
 
-現在の配布バイナリはコード署名されていないため、初回実行時にMicrosoft Defender SmartScreenの警告が表示される場合があります。ダウンロード元とReleaseに記載されたSHA-256を確認し、信頼できる場合にだけ実行してください。
+現在の配布バイナリはコード署名されていないため、初回実行時にWindowsのアプリ確認またはMicrosoft Defender SmartScreenの警告が表示される場合があります。Windowsのセキュリティ設定は変更せず、ダウンロード元とReleaseに記載されたSHA-256を確認し、信頼できる場合にだけ次の手順で続行してください。
+
+- 「インストールしようとしているアプリは、Microsoft 検証済みアプリではありません」と表示された場合は、表示された選択肢からインストールを続行します。
+- SmartScreenの「WindowsによってPCが保護されました」と表示された場合は、**詳細情報**を開き、発行元とアプリ名を確認してから**実行**を選びます。
+
+いずれも初回確認を通過するための操作であり、「アプリを入手する場所」やSmartScreenなどWindows全体のセキュリティ設定は変更しません。
 
 ポータブル版では、初回起動を許可すると、アプリが同梱BATの内容を検証して非表示で実行し、アプリEXEだけのMark of the Webを解除します。同じEXEの2回目以降は通常SmartScreenが表示されません。zipを再展開した場合や新しいバージョンへ更新した場合は、新しいEXEに対して初回確認が必要です。
 

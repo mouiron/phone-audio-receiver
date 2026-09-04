@@ -1316,10 +1316,9 @@ fn run_portable_unblock_helper() {
         return;
     }
 
-    let command_line = format!("\"{}\"", script.display());
     let _ = Command::new("cmd.exe")
-        .args(["/D", "/S", "/C"])
-        .arg(command_line)
+        .args(["/D", "/C"])
+        .arg(&script)
         .creation_flags(CREATE_NO_WINDOW)
         .status();
 }
