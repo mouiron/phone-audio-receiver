@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Phone Audio Receiver",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "identifier": "io.github.mouiron.phone-audio-receiver",
   "build": {
     "beforeDevCommand": "npm run frontend:dev",
@@ -31,7 +31,16 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "publisher": "mouiron",
     "copyright": "Copyright © 2026 mouiron",
-    "icon": ["../assets/icon.ico"]
+    "icon": ["../assets/icon.ico"],
+    "licenseFile": "../LICENSE",
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "windows/installer-hooks.nsh",
+        "languages": ["English", "Japanese"]
+      }
+    }
   }
 }

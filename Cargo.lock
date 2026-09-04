@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "bluetooth_phone_audio_receiver_core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "bluetooth_phone_audio_receiver_tauri"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "bluetooth_phone_audio_receiver_core",
  "serde",

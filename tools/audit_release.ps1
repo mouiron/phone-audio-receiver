@@ -1,10 +1,19 @@
+param(
+    [string]$BinaryPath
+)
+
 $ErrorActionPreference = 'Stop'
 
 # cargo-auditableでビルドしたWindows exeに埋め込まれた依存情報を監査する。
 # Cargo.lockの条件付きLinux依存ではなく、配布物に実際に入った依存関係だけが対象。
 
 $projectRoot = Split-Path $PSScriptRoot -Parent
-$binaryPath = Join-Path $projectRoot 'target\release\Phone Audio Receiver.exe'
+$binaryPath = if ($BinaryPath) {
+    [System.IO.Path]::GetFullPath($BinaryPath)
+}
+else {
+    Join-Path $projectRoot 'target\release\Phone Audio Receiver.exe'
+}
 if (-not (Test-Path -LiteralPath $binaryPath)) {
     throw "配布用exeが見つかりません: $binaryPath"
 }

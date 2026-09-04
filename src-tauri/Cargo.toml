@@ -1,6 +1,6 @@
 [package]
 name = "bluetooth_phone_audio_receiver_tauri"
-version = "1.0.3"
+version = "1.0.4"
 description = "Bluetooth Phone Audio Receiver Tauri UI"
 edition = "2021"
 authors = ["mouiron"]

@@ -20,7 +20,16 @@ Phone Audio Receiver turns a Windows PC into a Bluetooth audio receiver for pair
 
 最新版は[GitHub Releases](https://github.com/mouiron/phone-audio-receiver/releases/latest)からダウンロードできます。
 
-zipを展開し、`Phone Audio Receiver.exe`を実行してください。現在の配布バイナリはコード署名されていないため、初回実行時にMicrosoft Defender SmartScreenの警告が表示される場合があります。ダウンロード元とReleaseに記載されたSHA-256を確認し、信頼できる場合にだけ実行してください。
+次の2形式を配布します。
+
+- インストーラー版: `Phone Audio Receiver 1.0.4 (Windows x64)-setup.exe`
+- ポータブル版: `Phone Audio Receiver 1.0.4 Portable (Windows x64).zip`
+
+インストーラー版はすべてのWindowsユーザー用として`Program Files`配下へインストールされ、インストールとアンインストールには管理者権限が必要です。ポータブル版はzipを任意のローカルフォルダーへ展開し、`Phone Audio Receiver.exe`を実行します。
+
+現在の配布バイナリはコード署名されていないため、初回実行時にMicrosoft Defender SmartScreenの警告が表示される場合があります。ダウンロード元とReleaseに記載されたSHA-256を確認し、信頼できる場合にだけ実行してください。
+
+ポータブル版では、初回起動を許可すると、アプリが同梱BATの内容を検証して非表示で実行し、アプリEXEだけのMark of the Webを解除します。同じEXEの2回目以降は通常SmartScreenが表示されません。zipを再展開した場合や新しいバージョンへ更新した場合は、新しいEXEに対して初回確認が必要です。
 
 ## 主な機能
 
@@ -60,6 +69,16 @@ zipを展開し、`Phone Audio Receiver.exe`を実行してください。現在
 既定では、ウィンドウを閉じてもアプリは終了せず、タスクトレイへ格納されます。完全に終了する場合は、タスクトレイアイコンを右クリックして**終了**を選択してください。
 
 タスクトレイを左クリックすると、最後に閉じた通常画面またはクイック操作画面が復帰します。右クリックメニューには、トレイ固定、接続中・接続処理中、お気に入り、その他の端末の順で最大6台を表示し、各グループ内では設定した表示順を維持します。端末ごとに接続・切断でき、7台以上見つかった場合は、**その他の端末…**から全端末を扱えるクイック操作画面を開けます。
+
+## アンインストール
+
+1. タスクトレイアイコンを右クリックし、**終了**を選んで完全に終了します。
+2. Windowsの **設定** → **アプリ** → **インストールされているアプリ** を開きます。
+3. **Phone Audio Receiver** のメニューから **アンインストール**を選び、画面の案内に従います。
+
+アンインストールすると、アプリ本体、ショートカット、アンインストールを実行したWindowsユーザーのログオン時の自動起動登録が削除されます。設定とログは再インストール時に引き継げるよう`%APPDATA%\phone_audio_receiver\`へ残します。完全に削除する場合は、アンインストール完了後にこのフォルダーを手動で削除してください。
+
+ポータブル版はアプリを完全終了してから展開したフォルダーを削除します。設定とログを残さない場合は、同じく`%APPDATA%\phone_audio_receiver\`を手動で削除してください。
 
 ## 端末カードの操作
 
@@ -132,6 +151,12 @@ cargo test --workspace --locked
 
 ```powershell
 .\tools\security_check.ps1
+```
+
+公開用のインストーラー、ポータブル版zip、SHA-256一覧は次のコマンドで生成します。
+
+```powershell
+.\tools\make_distribution.ps1
 ```
 
 開発上の不変条件と手動回帰確認は[CONTRIBUTING.md](CONTRIBUTING.md)を参照してください。

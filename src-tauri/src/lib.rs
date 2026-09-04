@@ -4,6 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(not(debug_assertions))]
+use std::ffi::OsString;
+#[cfg(not(debug_assertions))]
+use std::os::windows::process::CommandExt;
+#[cfg(not(debug_assertions))]
+use std::process::Command;
+
 use bluetooth_phone_audio_receiver_core::{bt, config, i18n};
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -35,6 +42,12 @@ const MAIN_WINDOW_TITLE_WIDE: PCWSTR = w!("Phone Audio Receiver");
 const QUICK_WINDOW_TITLE: &str = "Phone Audio Receiver — Quick controls";
 const QUICK_WINDOW_TITLE_WIDE: PCWSTR = w!("Phone Audio Receiver — Quick controls");
 const TRAY_DEVICE_LIMIT: usize = 6;
+#[cfg(not(debug_assertions))]
+const PORTABLE_UNBLOCK_SCRIPT_NAME: &str = "unblock_downloaded_app.bat";
+#[cfg(not(debug_assertions))]
+const PORTABLE_UNBLOCK_SCRIPT: &[u8] = include_bytes!("../resources/unblock_downloaded_app.bat");
+#[cfg(not(debug_assertions))]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(not(debug_assertions))]
 const SINGLE_INSTANCE_MUTEX: PCWSTR = w!("Local\\PhoneAudioReceiver.SingleInstance");
 // 配布版がタスクトレイで動作中でも `tauri dev` の検証プロセスを起動できるよう、
@@ -131,6 +144,23 @@ fn hide_window_for_tray<R: tauri::Runtime>(window: &tauri::Window<R>) {
         }
         Err(error) => config::append_log(&format!(
             "Windowsネイティブのタスクトレイ格納に失敗しました: {error}"
+        )),
+    }
+}
+
+fn hide_webview_window<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, description: &str) {
+    if let Err(error) = window.hide() {
+        config::append_log(&format!("{description}を非表示にできませんでした: {error}"));
+    }
+    match window.hwnd() {
+        Ok(hwnd) => {
+            let native_hwnd = windows::Win32::Foundation::HWND(hwnd.0);
+            unsafe {
+                let _ = ShowWindow(native_hwnd, SW_HIDE);
+            }
+        }
+        Err(error) => config::append_log(&format!(
+            "{description}のWindowsハンドルを取得できませんでした: {error}"
         )),
     }
 }
@@ -1174,7 +1204,7 @@ fn hide_quick_window(app: AppHandle) {
         WindowMode::Quick,
     );
     if let Some(window) = app.get_webview_window("quick") {
-        let _ = window.hide();
+        hide_webview_window(&window, "クイック操作画面");
     }
 }
 
@@ -1261,7 +1291,44 @@ fn remove_legacy_startup_registration() {
     }
 }
 
+/// ポータブル版をインターネットから取得した場合だけ、初回起動を許可した直後に
+/// 同梱BATで実行ファイルのMark of the Webを解除する。インストーラー版にはBATを
+/// 同梱しないため何もしない。差し替えられた外部BATを実行しないよう内容も照合する。
+#[cfg(not(debug_assertions))]
+fn run_portable_unblock_helper() {
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let Some(directory) = executable.parent() else {
+        return;
+    };
+    let script = directory.join(PORTABLE_UNBLOCK_SCRIPT_NAME);
+    let Ok(script_bytes) = std::fs::read(&script) else {
+        return;
+    };
+    if script_bytes.as_slice() != PORTABLE_UNBLOCK_SCRIPT {
+        return;
+    }
+
+    let mut zone_identifier = OsString::from(executable.as_os_str());
+    zone_identifier.push(":Zone.Identifier");
+    if std::fs::File::open(&zone_identifier).is_err() {
+        return;
+    }
+
+    let command_line = format!("\"{}\"", script.display());
+    let _ = Command::new("cmd.exe")
+        .args(["/D", "/S", "/C"])
+        .arg(command_line)
+        .env("PHONE_AUDIO_RECEIVER_EXE", executable)
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
 pub fn run() {
+    #[cfg(not(debug_assertions))]
+    run_portable_unblock_helper();
+
     #[cfg(debug_assertions)]
     {
         let executable = executable_for_diagnostics();
@@ -1308,7 +1375,7 @@ pub fn run() {
                     "Tauriプロセス内の端末別接続管理を初期化しました（状態監視なし）。",
                 );
             }
-            WebviewWindowBuilder::new(
+            let quick_window = WebviewWindowBuilder::new(
                 app,
                 "quick",
                 WebviewUrl::App("index.html?mode=quick".into()),
@@ -1320,6 +1387,7 @@ pub fn run() {
             .visible(false)
             .center()
             .build()?;
+            hide_webview_window(&quick_window, "起動時のクイック操作画面");
 
             let menu = Menu::new(app)?;
             let icon = app
@@ -1449,7 +1517,7 @@ fn show_main_window(app: &AppHandle) {
         WindowMode::Main,
     );
     if let Some(quick) = app.get_webview_window("quick") {
-        let _ = quick.hide();
+        hide_webview_window(&quick, "クイック操作画面");
     }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -1464,7 +1532,7 @@ fn show_quick_window(app: &AppHandle) {
         WindowMode::Quick,
     );
     if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
+        hide_webview_window(&main, "通常画面");
     }
     if let Some(window) = app.get_webview_window("quick") {
         let _ = window.center();
